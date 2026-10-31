@@ -19,6 +19,7 @@ package javax.microedition.shell;
 
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.Message;
 import android.os.Process;
 import android.util.Log;
@@ -58,6 +59,7 @@ public class MidletThread extends HandlerThread implements Handler.Callback {
 		super("MidletMain");
 		this.microLoader = microLoader;
 		this.mainClass = mainClass;
+		installMidletExceptionHandler();
 		start();
 		handler = new Handler(getLooper(), this);
 		handler.obtainMessage(INIT).sendToTarget();
@@ -65,6 +67,41 @@ public class MidletThread extends HandlerThread implements Handler.Callback {
 
 	static void create(MicroLoader microLoader, String mainClass) {
 		instance = new MidletThread(microLoader, mainClass);
+	}
+
+	/**
+	 * On a J2ME device an uncaught exception terminates only the thread that threw it,
+	 * while Android kills the whole process. Midlets that run several game instances
+	 * in one process (or just race on disconnect in a network thread) then crash back
+	 * to the app list. Keep the J2ME behaviour for threads created by the midlet;
+	 * the UI thread, MidletThread itself and VM errors still go to the previous handler.
+	 */
+	private static void installMidletExceptionHandler() {
+		Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+		if (previous instanceof MidletExceptionHandler) {
+			return;
+		}
+		Thread.setDefaultUncaughtExceptionHandler(new MidletExceptionHandler(previous));
+	}
+
+	private static class MidletExceptionHandler implements UncaughtExceptionHandler {
+		private final UncaughtExceptionHandler previous;
+
+		MidletExceptionHandler(UncaughtExceptionHandler previous) {
+			this.previous = previous;
+		}
+
+		@Override
+		public void uncaughtException(@NonNull Thread t, @NonNull Throwable e) {
+			boolean fatal = t == Looper.getMainLooper().getThread()
+					|| t instanceof MidletThread
+					|| e instanceof VirtualMachineError;
+			if (fatal && previous != null) {
+				previous.uncaughtException(t, e);
+				return;
+			}
+			Log.e(TAG, "Uncaught exception in midlet thread \"" + t.getName() + "\", thread terminated", e);
+		}
 	}
 
 	/**
